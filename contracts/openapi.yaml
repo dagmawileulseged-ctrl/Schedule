@@ -1,0 +1,105 @@
+openapi: 3.1.0
+info:
+  title: Adaptive College Scheduling Engine API
+  version: 1.0.0
+servers:
+  - url: https://api.acse.local/v1
+paths:
+  /auth/login:
+    post:
+      summary: Unified login for Admin, Teacher, and Student roles.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        "200":
+          description: Authenticated user and token.
+  /programs:
+    get: { summary: List periods }
+    post: { summary: Initialize Term or Semester period }
+  /batches:
+    get: { summary: List batches }
+    post: { summary: Create batch with student count }
+  /sections:
+    post: { summary: Create section under a batch }
+  /lab-groups:
+    post: { summary: Create lab group under a section }
+  /teachers:
+    get: { summary: List teachers with availability }
+    post: { summary: Create lecturer or lab instructor }
+  /rooms:
+    get: { summary: List rooms and real-time occupancy }
+    post: { summary: Create lecture room, computer lab, or library }
+  /courses:
+    get: { summary: List courses }
+    post: { summary: Create course with code, name, lab, weekly counts, and equipment flags }
+  /course-offerings:
+    post: { summary: Assign courses and teachers to batches }
+  /schedules/generate:
+    post:
+      summary: Trigger CSP auto-scheduler for current global calendar state.
+      responses:
+        "200":
+          description: Generated schedule or actionable conflict suggestions.
+  /schedules/suggestions:
+    get: { summary: Retrieve latest 3 to 5 conflict suggestions }
+  /schedules:
+    get:
+      summary: Query weekly schedule by teacher, student, room, or batch.
+      parameters:
+        - { name: teacherId, in: query, schema: { type: string } }
+        - { name: studentId, in: query, schema: { type: string } }
+        - { name: roomId, in: query, schema: { type: string } }
+        - { name: batchId, in: query, schema: { type: string } }
+  /exams:
+    post: { summary: Create manually timed exam }
+  /exams/{examId}/apply:
+    post:
+      summary: Apply exam override, release matching program class slots, and run displacement escalation.
+      parameters:
+        - { name: examId, in: path, required: true, schema: { type: string } }
+components:
+  schemas:
+    CalendarPayload:
+      type: object
+      required: [weekStart, days, slots, events, warnings]
+      properties:
+        weekStart: { type: string, format: date }
+        days:
+          type: array
+          items: { type: string, enum: [MONDAY, TUESDAY, WEDNESDAY, THURSDAY, FRIDAY, SATURDAY] }
+        slots:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              start: { type: string }
+              end: { type: string }
+              block: { type: string }
+        events:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              title: { type: string }
+              day: { type: string }
+              slotId: { type: string }
+              start: { type: string }
+              end: { type: string }
+              room: { type: string }
+              teacher: { type: string }
+              audience: { type: string }
+              kind: { type: string, enum: [THEORY, LAB, EXAM] }
+              color: { type: string }
+        warnings:
+          type: array
+          items: { type: string }

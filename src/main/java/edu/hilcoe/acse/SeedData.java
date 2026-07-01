@@ -1,0 +1,76 @@
+package edu.hilcoe.acse;
+
+import java.time.LocalDate;
+import java.util.List;
+
+final class SeedData {
+    private SeedData() { }
+
+    static AcseRepository create() {
+        AcseRepository repo = new AcseRepository();
+
+        User admin = User.of(UserRole.ADMIN, "ACSE Admin", "admin@acse.local");
+        User student = User.of(UserRole.STUDENT, "Student Demo", "student@acse.local");
+        repo.users.add(admin);
+        repo.users.add(student);
+
+        addLectureRooms(repo, "201", "202", "203", "301", "302", "303", "401", "402", "601");
+        addLabs(repo, "204", "304", "404", "504");
+
+        Program term = new Program(Ids.next(), "Term Program", ProgramType.TERM, "2026/27",
+                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 12, 20), 16, 3, 4);
+        Program semester = new Program(Ids.next(), "Semester Program", ProgramType.SEMESTER, "2026/27",
+                LocalDate.of(2026, 9, 1), LocalDate.of(2027, 1, 30), 20, 5, 6);
+        repo.programs.add(term);
+        repo.programs.add(semester);
+
+        List<Batch> seededBatches = List.of(
+                addBatch(repo, semester, "DRBSE2502", List.of("Section A", "Section B")),
+                addBatch(repo, semester, "DRB2502", List.of("Main")),
+                addBatch(repo, semester, "DR2503", List.of("Section A", "Section B")),
+                addBatch(repo, semester, "DRBSE2503", List.of("Section A", "Section B")),
+                addBatch(repo, term, "DRB2301", List.of("Main")),
+                addBatch(repo, term, "DRBSE2301", List.of("Main")),
+                addBatch(repo, term, "DRB2302", List.of("Section A", "Section B")),
+                addBatch(repo, term, "DRBSE2302", List.of("Section A", "Section B")),
+                addBatch(repo, term, "DRB2401", List.of("Main")),
+                addBatch(repo, term, "DRBSE2401", List.of("Section A", "Section B"))
+        );
+
+        Section firstSection = repo.sections.stream().filter(section -> section.batchId().equals(seededBatches.getFirst().id())).findFirst().orElseThrow();
+        LabGroup firstGroup = repo.labGroups.stream().filter(group -> group.sectionId().equals(firstSection.id())).findFirst().orElseThrow();
+        repo.studentProfiles.add(new StudentProfile(student.id(), seededBatches.getFirst().id(), firstSection.id(), firstGroup.id()));
+
+        return repo;
+    }
+
+    private static void addLectureRooms(AcseRepository repo, String... names) {
+        for (String name : names) {
+            int capacity = name.equals("601") ? 80 : 45;
+            Equipment equipment = name.endsWith("01") || name.endsWith("03") ? Equipment.TV_BOARD : Equipment.BOARD_ONLY;
+            repo.rooms.add(new Room(Ids.next(), name, capacity, RoomType.LECTURE_ROOM, equipment));
+        }
+    }
+
+    private static void addLabs(AcseRepository repo, String... names) {
+        for (String name : names) {
+            repo.rooms.add(new Room(Ids.next(), "Lab " + name, 24, RoomType.COMPUTER_LAB, Equipment.COMPUTERS));
+        }
+    }
+
+    static Batch addBatch(AcseRepository repo, Program program, String name, List<String> sectionNames) {
+        int sectionSize = sectionNames.size() == 1 ? 40 : 35;
+        Batch batch = new Batch(Ids.next(), program.id(), name, sectionSize * sectionNames.size());
+        repo.batches.add(batch);
+        int groupNumber = 1;
+        for (String sectionName : sectionNames) {
+            Section section = new Section(Ids.next(), batch.id(), sectionName, sectionSize);
+            repo.sections.add(section);
+            int firstGroupSize = (int) Math.ceil(sectionSize / 2.0);
+            repo.labGroups.add(new LabGroup(Ids.next(), section.id(), "G" + groupNumber++, firstGroupSize));
+            repo.labGroups.add(new LabGroup(Ids.next(), section.id(), "G" + groupNumber++, sectionSize - firstGroupSize));
+        }
+        return batch;
+    }
+
+}
