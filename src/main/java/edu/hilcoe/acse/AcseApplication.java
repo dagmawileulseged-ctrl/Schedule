@@ -526,8 +526,6 @@ public final class AcseApplication extends Application {
                 }
             }
         };
-        batchBox.setOnAction(event -> refreshOfferings.run());
-        refreshOfferings.run();
 
         TextField lecturerName = new TextField();
         lecturerName.setPromptText("Lecturer name");
@@ -540,16 +538,31 @@ public final class AcseApplication extends Application {
         TextField labEmail = new TextField();
         labEmail.setPromptText("Lab instructor email");
         VBox labAvailability = createDayAvailabilityEditor("Lab instructor availability");
+        Label labRequirement = new Label();
+        labRequirement.getStyleClass().add("muted");
+        labRequirement.setWrapText(true);
         TitledPane labPane = new TitledPane("Lab Instructor", new VBox(8,
-                new HBox(8, labName, labEmail), labAvailability));
+                labRequirement, new HBox(8, labName, labEmail), labAvailability));
         labPane.setExpanded(true);
-        labPane.visibleProperty().bind(offeringBox.valueProperty().map(offering -> {
-            if (offering == null) {
-                return false;
+        Runnable refreshLabPane = () -> {
+            CourseOffering selected = offeringBox.getValue();
+            boolean needsLabInstructor = selected != null && repo.course(selected.courseId()).requiresLab();
+            labPane.setVisible(needsLabInstructor);
+            labPane.setManaged(needsLabInstructor);
+            if (needsLabInstructor) {
+                Course course = repo.course(selected.courseId());
+                labRequirement.setText(course.code() + " requires a lab session, so provide the lab instructor using the same availability procedure.");
+            } else {
+                labRequirement.setText("");
             }
-            return repo.course(offering.courseId()).requiresLab();
-        }));
-        labPane.managedProperty().bind(labPane.visibleProperty());
+        };
+        offeringBox.setOnAction(event -> refreshLabPane.run());
+        batchBox.setOnAction(event -> {
+            refreshOfferings.run();
+            refreshLabPane.run();
+        });
+        refreshOfferings.run();
+        refreshLabPane.run();
 
         Label status = new Label();
         status.getStyleClass().add("muted");
