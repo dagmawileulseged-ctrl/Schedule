@@ -50,6 +50,7 @@ public final class AcseApplication extends Application {
     private List<String> dashboardMessages = List.of();
     private String selectedFilterType = "All";
     private String selectedFilterValue = "All";
+    private String selectedSectionFilter = "All Sections";
     private String setupAcademicYear = "2026/27";
     private SemesterPeriod setupSemester = SemesterPeriod.FIRST;
     private User currentUser;
@@ -162,18 +163,28 @@ public final class AcseApplication extends Application {
         ComboBox<String> filterValue = new ComboBox<>();
         populateFilterValues(filterType.getValue(), filterValue);
         filterValue.setValue(selectedFilterValue);
+        ComboBox<String> sectionFilter = new ComboBox<>();
+        populateSectionFilter(sectionFilter);
         filterType.setOnAction(event -> {
             selectedFilterType = filterType.getValue();
             selectedFilterValue = "All";
+            selectedSectionFilter = "All Sections";
             populateFilterValues(selectedFilterType, filterValue);
+            populateSectionFilter(sectionFilter);
+        });
+        filterValue.setOnAction(event -> {
+            selectedFilterValue = filterValue.getValue() == null ? "All" : filterValue.getValue();
+            selectedSectionFilter = "All Sections";
+            populateSectionFilter(sectionFilter);
         });
         Button applyFilter = new Button("Apply Filter");
         applyFilter.setOnAction(event -> {
             selectedFilterType = filterType.getValue();
             selectedFilterValue = filterValue.getValue() == null ? "All" : filterValue.getValue();
+            selectedSectionFilter = sectionFilter.getValue() == null ? "All Sections" : sectionFilter.getValue();
             showAdmin();
         });
-        toolbar.getChildren().addAll(new Label("Admin Dashboard"), generate, clear, exam, filterType, filterValue, applyFilter);
+        toolbar.getChildren().addAll(new Label("Admin Dashboard"), generate, clear, exam, filterType, filterValue, sectionFilter, applyFilter);
 
         ListView<String> warnings = new ListView<>();
         warnings.setPrefHeight(130);
@@ -285,6 +296,27 @@ public final class AcseApplication extends Application {
         filterValue.setValue(selectedFilterValue);
     }
 
+    private void populateSectionFilter(ComboBox<String> sectionFilter) {
+        sectionFilter.getItems().clear();
+        sectionFilter.getItems().add("All Sections");
+        boolean enabled = selectedFilterType.equals("Batch") && !selectedFilterValue.equals("All");
+        if (enabled) {
+            repo.batches.stream()
+                    .filter(batch -> batch.name().equals(selectedFilterValue))
+                    .findFirst()
+                    .ifPresent(batch -> repo.sections.stream()
+                            .filter(section -> section.batchId().equals(batch.id()))
+                            .map(Section::name)
+                            .sorted()
+                            .forEach(sectionFilter.getItems()::add));
+        }
+        if (!sectionFilter.getItems().contains(selectedSectionFilter)) {
+            selectedSectionFilter = "All Sections";
+        }
+        sectionFilter.setValue(selectedSectionFilter);
+        sectionFilter.setDisable(!enabled);
+    }
+
     private List<ScheduleItem> filteredSchedule() {
         if (selectedFilterType.equals("All") || selectedFilterValue.equals("All")) {
             return List.copyOf(repo.schedule);
@@ -293,7 +325,8 @@ public final class AcseApplication extends Application {
                 .filter(item -> switch (selectedFilterType) {
                     case "Teacher" -> item.kind() != SessionKind.EXAM && repo.teacher(item.teacherId()).name().equals(selectedFilterValue);
                     case "Batch" -> item.kind() != SessionKind.EXAM
-                            && repo.batch(repo.offering(item.offeringId()).batchId()).name().equals(selectedFilterValue);
+                            && repo.batch(repo.offering(item.offeringId()).batchId()).name().equals(selectedFilterValue)
+                            && matchesSelectedSection(item);
                     case "Course" -> {
                         Course course = repo.course(item.courseId());
                         yield (course.code() + " - " + course.name()).equals(selectedFilterValue);
@@ -301,6 +334,20 @@ public final class AcseApplication extends Application {
                     default -> true;
                 })
                 .toList();
+    }
+
+    private boolean matchesSelectedSection(ScheduleItem item) {
+        if (selectedSectionFilter.equals("All Sections")) {
+            return true;
+        }
+        if (item.kind() == SessionKind.THEORY && item.sectionId() != null) {
+            return repo.section(item.sectionId()).name().equals(selectedSectionFilter);
+        }
+        if (item.kind() == SessionKind.LAB && item.labGroupId() != null) {
+            LabGroup group = repo.labGroup(item.labGroupId());
+            return repo.section(group.sectionId()).name().equals(selectedSectionFilter);
+        }
+        return false;
     }
 
     private VBox academicSetupPanel() {
@@ -509,7 +556,7 @@ public final class AcseApplication extends Application {
         panel.getStyleClass().add("setup-panel");
         Label title = new Label("Teacher Assignment");
         title.getStyleClass().add("panel-title");
-        Label intro = new Label("Select a batch, then choose a course offering for that batch. Assign lecturers with per-day Morning or Afternoon availability.");
+        Label intro = new Label("Select a batch, then choose a course offering for that batch. Assign teachers with per-day Morning, Afternoon, or Full day availability.");
         intro.getStyleClass().add("muted");
         intro.setWrapText(true);
 
@@ -609,8 +656,11 @@ public final class AcseApplication extends Application {
 
             assignTeachersToOffering(offering, lecturer, labInstructor);
             repo.schedule.clear();
+            String labNote = course.requiresLab() && labInstructor != null
+                    ? " Lab instructor also applied to matching " + course.code() + " offerings."
+                    : "";
             dashboardMessages = List.of(lecturer.name() + " assigned to " + course.code() + " for "
-                    + batchBox.getValue().name() + ". Generate the schedule again to apply it.");
+                    + batchBox.getValue().name() + "." + labNote + " Generate the schedule again to apply it.");
             showAdmin();
         });
 
@@ -627,7 +677,7 @@ public final class AcseApplication extends Application {
 
     private VBox createDayAvailabilityEditor(String heading) {
         VBox box = new VBox(6);
-        Label header = new Label(heading + " — choose Morning or Afternoon independently for each day:");
+        Label header = new Label(heading + " — choose Morning, Afternoon, or Full day independently for each day:");
         header.getStyleClass().add("muted");
         header.setWrapText(true);
         box.getChildren().add(header);
@@ -650,9 +700,11 @@ public final class AcseApplication extends Application {
         Map<DayOfWeek, Set<String>> availability = new EnumMap<>(DayOfWeek.class);
         for (DayAvailabilityControls control : controls) {
             if (control.enabled.isSelected()) {
-                Set<String> slots = "Afternoon".equals(control.shift.getValue())
-                        ? Set.of("A1", "A2")
-                        : Set.of("M1", "M2", "M3");
+                Set<String> slots = switch (control.shift.getValue()) {
+                    case "Afternoon" -> Set.of("A1", "A2");
+                    case "Full day" -> Set.of("M1", "M2", "M3", "A1", "A2");
+                    default -> Set.of("M1", "M2", "M3");
+                };
                 availability.put(control.day, slots);
             }
         }
@@ -668,7 +720,7 @@ public final class AcseApplication extends Application {
             this.day = day;
             enabled = new CheckBox(labelDay(day));
             shift = new ComboBox<>();
-            shift.getItems().addAll("Morning", "Afternoon");
+            shift.getItems().addAll("Morning", "Afternoon", "Full day");
             shift.setValue("Morning");
             shift.setDisable(true);
             enabled.selectedProperty().addListener((obs, oldValue, selected) -> shift.setDisable(!selected));
@@ -693,14 +745,34 @@ public final class AcseApplication extends Application {
         String labInstructorId = course.requiresLab() && labInstructor != null ? labInstructor.id() : null;
         repo.offerings.remove(offering);
         repo.offerings.add(new CourseOffering(offering.id(), offering.batchId(), offering.courseId(), lecturer.id(), labInstructorId));
+        if (labInstructorId != null) {
+            List<CourseOffering> sameCourseLabOfferings = repo.offerings.stream()
+                    .filter(candidate -> repo.course(candidate.courseId()).code().equalsIgnoreCase(course.code()))
+                    .filter(candidate -> repo.course(candidate.courseId()).requiresLab())
+                    .filter(candidate -> !candidate.id().equals(offering.id()))
+                    .toList();
+            for (CourseOffering candidate : sameCourseLabOfferings) {
+                repo.offerings.remove(candidate);
+                repo.offerings.add(new CourseOffering(candidate.id(), candidate.batchId(), candidate.courseId(),
+                        candidate.lecturerId(), labInstructorId));
+            }
+        }
     }
 
     private String formatTeacherAvailability(Teacher teacher) {
         return teacher.availability().entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
-                .map(entry -> labelDay(entry.getKey()).substring(0, 3) + " "
-                        + (entry.getValue().contains("M1") ? "Morning" : "Afternoon"))
+                .map(entry -> labelDay(entry.getKey()).substring(0, 3) + " " + shiftLabel(entry.getValue()))
                 .collect(Collectors.joining(", "));
+    }
+
+    private String shiftLabel(Set<String> slots) {
+        boolean morning = slots.contains("M1") || slots.contains("M2") || slots.contains("M3");
+        boolean afternoon = slots.contains("A1") || slots.contains("A2");
+        if (morning && afternoon) {
+            return "Full day";
+        }
+        return afternoon ? "Afternoon" : "Morning";
     }
 
     private javafx.util.StringConverter<CourseOffering> courseOfferingConverter() {

@@ -61,7 +61,10 @@ final class AcseRepository {
     }
 
     List<CourseOffering> offeringsMissingTeachers() {
-        return offerings.stream().filter(offering -> offering.lecturerId() == null).toList();
+        return offerings.stream().filter(offering -> {
+            Course course = course(offering.courseId());
+            return offering.lecturerId() == null || (course.requiresLab() && offering.labInstructorId() == null);
+        }).toList();
     }
 
     Optional<Teacher> teacherByUser(String userId) {
