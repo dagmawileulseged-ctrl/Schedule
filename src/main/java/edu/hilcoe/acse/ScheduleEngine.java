@@ -53,6 +53,9 @@ final class ScheduleEngine {
     List<ClassInstance> buildClassInstances() {
         List<ClassInstance> instances = new ArrayList<>();
         for (CourseOffering offering : repo.offerings) {
+            if (offering.lecturerId() == null) {
+                continue;
+            }
             Course course = repo.course(offering.courseId());
             List<Section> batchSections = repo.sections.stream()
                     .filter(section -> section.batchId().equals(offering.batchId()))

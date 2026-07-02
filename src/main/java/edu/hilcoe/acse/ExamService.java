@@ -26,7 +26,7 @@ final class ExamService {
                 .filter(item -> repo.program(repo.batch(repo.offering(item.offeringId()).batchId()).programId()).id().equals(programId))
                 .toList();
         repo.schedule.removeAll(released);
-        log.add("Exam week opened " + released.size() + " regular " + program.type() + " slots for " + program.name() + ".");
+        log.add("Exam week opened " + released.size() + " regular " + program.semester() + " semester slots for " + program.name() + ".");
 
         List<Room> examRooms = repo.rooms.stream()
                 .filter(room -> room.type() == RoomType.LECTURE_ROOM || room.type() == RoomType.COMPUTER_LAB || room.type() == RoomType.LIBRARY)

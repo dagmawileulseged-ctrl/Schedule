@@ -12,7 +12,7 @@ import java.util.Set;
 import java.util.UUID;
 
 enum UserRole { ADMIN, TEACHER, STUDENT }
-enum ProgramType { TERM, SEMESTER }
+enum SemesterPeriod { FIRST, SECOND }
 enum TeacherRole { LECTURER, LAB_INSTRUCTOR }
 enum RoomType { LECTURE_ROOM, COMPUTER_LAB, LIBRARY }
 enum Equipment { TV_BOARD, BOARD_ONLY, COMPUTERS, LIBRARY }
@@ -45,14 +45,22 @@ record Teacher(String id, String userId, String name, TeacherRole role, Map<DayO
 
 record Room(String id, String name, int capacity, RoomType type, Equipment equipment) { }
 
-record Program(String id, String name, ProgramType type, String academicYear, LocalDate startDate, LocalDate endDate,
-               int totalWeeks, int typicalMinCourses, int typicalMaxCourses) { }
+record Program(String id, String name, SemesterPeriod semester, String academicYear, LocalDate startDate, LocalDate endDate,
+               int totalWeeks, int typicalMinCourses, int typicalMaxCourses) {
+    String displayLabel() {
+        return academicYear + " — " + (semester == SemesterPeriod.FIRST ? "First" : "Second") + " Semester";
+    }
+}
 
 record Batch(String id, String programId, String name, int studentCount) { }
 record Section(String id, String batchId, String name, int size) { }
 record LabGroup(String id, String sectionId, String name, int size) { }
 
-record Course(String id, String code, String name, boolean requiresLab, boolean needsTv, int weeklyTheoryCount, int weeklyLabCount) { }
+record Course(String id, String code, String name, boolean requiresLab, boolean needsTv, int weeklyTheoryCount, int weeklyLabCount) {
+    static Course create(String id, String code, String name, boolean requiresLab, boolean needsTv) {
+        return new Course(id, code, name, requiresLab, needsTv, 2, requiresLab ? 1 : 0);
+    }
+}
 
 record CourseOffering(String id, String batchId, String courseId, String lecturerId, String labInstructorId) { }
 

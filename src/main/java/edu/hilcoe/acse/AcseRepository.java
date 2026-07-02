@@ -30,6 +30,40 @@ final class AcseRepository {
         return users.stream().filter(user -> user.email().equalsIgnoreCase(email)).findFirst();
     }
 
+    Program findOrCreateProgram(String academicYear, SemesterPeriod semester) {
+        return programs.stream()
+                .filter(program -> program.academicYear().equals(academicYear) && program.semester() == semester)
+                .findFirst()
+                .orElseGet(() -> {
+                    String label = semester == SemesterPeriod.FIRST ? "First" : "Second";
+                    Program program = new Program(
+                            Ids.next(),
+                            academicYear + " " + label + " Semester",
+                            semester,
+                            academicYear,
+                            LocalDate.now(),
+                            LocalDate.now().plusMonths(semester == SemesterPeriod.FIRST ? 4 : 5),
+                            semester == SemesterPeriod.FIRST ? 16 : 20,
+                            5,
+                            6
+                    );
+                    programs.add(program);
+                    return program;
+                });
+    }
+
+    List<Batch> batchesForProgram(String programId) {
+        return batches.stream().filter(batch -> batch.programId().equals(programId)).toList();
+    }
+
+    List<CourseOffering> offeringsForBatch(String batchId) {
+        return offerings.stream().filter(offering -> offering.batchId().equals(batchId)).toList();
+    }
+
+    List<CourseOffering> offeringsMissingTeachers() {
+        return offerings.stream().filter(offering -> offering.lecturerId() == null).toList();
+    }
+
     Optional<Teacher> teacherByUser(String userId) {
         return teachers.stream().filter(teacher -> teacher.userId().equals(userId)).findFirst();
     }

@@ -38,6 +38,7 @@ import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -49,6 +50,8 @@ public final class AcseApplication extends Application {
     private List<String> dashboardMessages = List.of();
     private String selectedFilterType = "All";
     private String selectedFilterValue = "All";
+    private String setupAcademicYear = "2026/27";
+    private SemesterPeriod setupSemester = SemesterPeriod.FIRST;
     private User currentUser;
 
     @Override
@@ -177,6 +180,20 @@ public final class AcseApplication extends Application {
         warnings.getStyleClass().add("warnings");
         warnings.getItems().setAll(dashboardMessages);
         generate.setOnAction(event -> {
+            List<String> unassigned = repo.offeringsMissingTeachers().stream()
+                    .map(offering -> repo.course(offering.courseId()).code() + " (" + repo.batch(offering.batchId()).name() + ")")
+                    .toList();
+            if (!unassigned.isEmpty()) {
+                dashboardMessages = List.of("Assign teachers to all course offerings before generating: "
+                        + String.join(", ", unassigned));
+                showAdmin();
+                return;
+            }
+            if (repo.offerings.isEmpty()) {
+                dashboardMessages = List.of("Add batches and course offerings in Academic Setup first.");
+                showAdmin();
+                return;
+            }
             SolverResult result = scheduler.generate();
             dashboardMessages = result.success()
                     ? result.warnings()
@@ -184,8 +201,8 @@ public final class AcseApplication extends Application {
             showAdmin();
         });
         exam.setOnAction(event -> {
-            if (repo.courses.isEmpty()) {
-                dashboardMessages = List.of("Add at least one course assignment before applying an exam override.");
+            if (repo.offerings.isEmpty()) {
+                dashboardMessages = List.of("Add course offerings in Academic Setup before applying an exam override.");
                 showAdmin();
                 return;
             }
@@ -193,7 +210,8 @@ public final class AcseApplication extends Application {
                 scheduler.generate();
             }
             Course course = repo.courses.getFirst();
-            Program program = repo.programs.getFirst();
+            CourseOffering offering = repo.offerings.getFirst();
+            Program program = repo.program(repo.batch(offering.batchId()).programId());
             dashboardMessages = exams.scheduleExam(course.id(), program.id(), DayOfWeek.MONDAY, LocalTime.of(8, 0), LocalTime.of(11, 0));
             showAdmin();
         });
@@ -211,8 +229,8 @@ public final class AcseApplication extends Application {
         tabs.getTabs().add(tab("Schedule", new VBox(12, weekView(repo.payloadFor(visibleSchedule)), detailsTable(visibleSchedule),
                 new Label("Warnings and Suggestions"), warnings)));
         tabs.getTabs().add(tab("Conflicts", conflictPanel()));
+        tabs.getTabs().add(tab("Academic Setup", academicSetupPanel()));
         tabs.getTabs().add(tab("Teacher Assignments", teacherAssignmentPanel()));
-        tabs.getTabs().add(tab("Batches", batchSetupPanel()));
         page.getChildren().addAll(toolbar, tabs);
         VBox.setVgrow(tabs, Priority.ALWAYS);
         root.setCenter(page);
@@ -230,7 +248,7 @@ public final class AcseApplication extends Application {
         panel.getStyleClass().add("setup-panel");
         Label title = new Label("Conflict Management");
         title.getStyleClass().add("panel-title");
-        Label policy = new Label("Hard conflicts are never auto-forced. Adjust teacher availability, teacher assignment, course load, or batch setup, then generate again.");
+        Label policy = new Label("Hard conflicts are never auto-forced. Adjust teacher availability in Teacher Assignments, course offerings, or batch setup, then generate again.");
         policy.getStyleClass().add("muted");
         policy.setWrapText(true);
         ListView<String> suggestions = new ListView<>();
@@ -285,26 +303,162 @@ public final class AcseApplication extends Application {
                 .toList();
     }
 
-    private VBox teacherAssignmentPanel() {
-        VBox panel = new VBox(10);
+    private VBox academicSetupPanel() {
+        VBox panel = new VBox(14);
         panel.getStyleClass().add("setup-panel");
-        Label title = new Label("Teacher Assignment");
+
+        Label title = new Label("Academic Setup");
         title.getStyleClass().add("panel-title");
+        Label intro = new Label("Step 1: Set the academic year and semester. Step 2: Add batches. Step 3: Add course offerings for each batch.");
+        intro.getStyleClass().add("muted");
+        intro.setWrapText(true);
 
-        TextField name = new TextField();
-        name.setPromptText("Lecturer name");
-        TextField email = new TextField();
-        email.setPromptText("Lecturer email");
-        ComboBox<String> shift = new ComboBox<>();
-        shift.getItems().addAll("Morning", "Afternoon", "Full day");
-        shift.setValue("Morning");
+        TitledPane periodPane = new TitledPane("1. Academic Year & Semester", academicPeriodSection());
+        periodPane.setExpanded(true);
+        TitledPane batchPane = new TitledPane("2. Batches", batchSection());
+        batchPane.setExpanded(true);
+        TitledPane offeringPane = new TitledPane("3. Course Offerings", courseOfferingSection());
+        offeringPane.setExpanded(true);
 
-        HBox fields = new HBox(8, name, email, shift);
+        panel.getChildren().addAll(title, intro, periodPane, batchPane, offeringPane);
+        return panel;
+    }
+
+    private VBox academicPeriodSection() {
+        VBox box = new VBox(8);
+        TextField yearField = new TextField(setupAcademicYear);
+        yearField.setPromptText("Academic year, e.g. 2026/27");
+        ComboBox<SemesterPeriod> semesterBox = new ComboBox<>();
+        semesterBox.getItems().addAll(SemesterPeriod.values());
+        semesterBox.setValue(setupSemester);
+        semesterBox.setConverter(new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(SemesterPeriod value) {
+                return value == null ? "" : value == SemesterPeriod.FIRST ? "First Semester" : "Second Semester";
+            }
+
+            @Override
+            public SemesterPeriod fromString(String value) {
+                return "Second Semester".equals(value) ? SemesterPeriod.SECOND : SemesterPeriod.FIRST;
+            }
+        });
+        Label status = new Label();
+        status.getStyleClass().add("muted");
+        Button apply = new Button("Set Active Period");
+        apply.getStyleClass().add("primary-button");
+        apply.setOnAction(event -> {
+            if (yearField.getText().isBlank()) {
+                status.setText("Enter an academic year.");
+                return;
+            }
+            setupAcademicYear = yearField.getText().trim();
+            setupSemester = semesterBox.getValue();
+            Program program = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
+            status.setText("Active period: " + program.displayLabel());
+        });
+        Program current = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
+        status.setText("Active period: " + current.displayLabel());
+        HBox fields = new HBox(8, new Label("Year"), yearField, new Label("Semester"), semesterBox, apply);
         fields.setAlignment(Pos.CENTER_LEFT);
+        box.getChildren().addAll(fields, status);
+        return box;
+    }
 
-        ComboBox<Batch> batch = new ComboBox<>();
-        batch.getItems().setAll(repo.batches);
-        batch.setConverter(new javafx.util.StringConverter<>() {
+    private VBox batchSection() {
+        VBox box = new VBox(8);
+        TextField batchName = new TextField();
+        batchName.setPromptText("Batch code, e.g. DRB2504");
+        ComboBox<String> sections = new ComboBox<>();
+        sections.getItems().addAll("No section", "Section A and B");
+        sections.setValue("Section A and B");
+        Label status = new Label();
+        status.getStyleClass().add("muted");
+        Button addBatch = new Button("Add Batch");
+        addBatch.getStyleClass().add("primary-button");
+        addBatch.setOnAction(event -> {
+            if (batchName.getText().isBlank()) {
+                status.setText("Enter a batch code first.");
+                return;
+            }
+            Program program = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
+            List<String> sectionNames = sections.getValue().equals("No section")
+                    ? List.of("Main")
+                    : List.of("Section A", "Section B");
+            Batch batch = SeedData.addBatch(repo, program, batchName.getText().trim().toUpperCase(), sectionNames);
+            repo.schedule.clear();
+            dashboardMessages = List.of(batch.name() + " added to " + program.displayLabel()
+                    + " with " + String.join(", ", sectionNames) + ". Add course offerings next.");
+            showAdmin();
+        });
+        HBox fields = new HBox(8, batchName, sections, addBatch);
+        fields.setAlignment(Pos.CENTER_LEFT);
+        TableView<Batch> batches = batchTable(program.id());
+        batches.setMaxHeight(150);
+        box.getChildren().addAll(fields, status, batches);
+        return box;
+    }
+
+    private VBox courseOfferingSection() {
+        VBox box = new VBox(8);
+        Program program = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
+        ComboBox<Batch> batchBox = batchComboBox(repo.batchesForProgram(program.id()));
+        TextField courseCode = new TextField();
+        courseCode.setPromptText("Course code");
+        TextField courseName = new TextField();
+        courseName.setPromptText("Course name");
+        CheckBox requiresLab = new CheckBox("Requires lab (2 lectures + 1 lab/week)");
+        CheckBox needsTv = new CheckBox("Needs TV");
+        Label loadHint = new Label("Without lab: 2 lecture classes/week. With lab: 2 lectures + 1 lab/week.");
+        loadHint.getStyleClass().add("muted");
+        loadHint.setWrapText(true);
+        Label status = new Label();
+        status.getStyleClass().add("muted");
+        Button addOffering = new Button("Add Course Offering");
+        addOffering.getStyleClass().add("primary-button");
+        addOffering.setOnAction(event -> {
+            if (batchBox.getValue() == null) {
+                status.setText("Select a batch first.");
+                return;
+            }
+            if (courseCode.getText().isBlank() || courseName.getText().isBlank()) {
+                status.setText("Enter course code and name.");
+                return;
+            }
+            Batch batch = batchBox.getValue();
+            Course course = upsertCourse(courseCode.getText().trim().toUpperCase(), courseName.getText().trim(),
+                    requiresLab.isSelected(), needsTv.isSelected());
+            boolean exists = repo.offerings.stream()
+                    .anyMatch(offering -> offering.batchId().equals(batch.id()) && offering.courseId().equals(course.id()));
+            if (exists) {
+                status.setText(course.code() + " is already offered to " + batch.name() + ".");
+                return;
+            }
+            repo.offerings.add(new CourseOffering(Ids.next(), batch.id(), course.id(), null, null));
+            repo.schedule.clear();
+            dashboardMessages = List.of("Course offering added: " + course.code() + " for " + batch.name()
+                    + ". Assign teachers in the Teacher Assignments tab.");
+            showAdmin();
+        });
+        HBox fields = new HBox(8, batchBox, courseCode, courseName, requiresLab, needsTv, addOffering);
+        fields.setAlignment(Pos.CENTER_LEFT);
+        TableView<CourseOffering> offerings = courseOfferingTable(program.id());
+        offerings.setMaxHeight(160);
+        box.getChildren().addAll(fields, loadHint, status, offerings);
+        return box;
+    }
+
+    private ComboBox<Batch> batchComboBox(List<Batch> batches) {
+        ComboBox<Batch> batchBox = new ComboBox<>();
+        batchBox.getItems().setAll(batches);
+        batchBox.setConverter(batchConverter());
+        if (!batches.isEmpty()) {
+            batchBox.setValue(batches.getFirst());
+        }
+        return batchBox;
+    }
+
+    private javafx.util.StringConverter<Batch> batchConverter() {
+        return new javafx.util.StringConverter<>() {
             @Override
             public String toString(Batch value) {
                 return value == null ? "" : value.name();
@@ -314,116 +468,205 @@ public final class AcseApplication extends Application {
             public Batch fromString(String value) {
                 return repo.batches.stream().filter(candidate -> candidate.name().equals(value)).findFirst().orElse(null);
             }
+        };
+    }
+
+    private TableView<CourseOffering> courseOfferingTable(String programId) {
+        TableView<CourseOffering> table = new TableView<>();
+        table.getItems().setAll(repo.offerings.stream()
+                .filter(offering -> repo.batch(offering.batchId()).programId().equals(programId))
+                .toList());
+        TableColumn<CourseOffering, String> batchCol = new TableColumn<>("Batch");
+        batchCol.setCellValueFactory(data -> new SimpleStringProperty(repo.batch(data.getValue().batchId()).name()));
+        TableColumn<CourseOffering, String> courseCol = new TableColumn<>("Course");
+        courseCol.setCellValueFactory(data -> {
+            Course course = repo.course(data.getValue().courseId());
+            return new SimpleStringProperty(course.code() + " - " + course.name());
         });
-        if (!repo.batches.isEmpty()) {
-            batch.setValue(repo.batches.getFirst());
-        }
-        TextField courseCode = new TextField();
-        courseCode.setPromptText("Course code");
-        TextField courseName = new TextField();
-        courseName.setPromptText("Course name");
-        TextField labCount = new TextField("1");
-        labCount.setPromptText("Lab/week");
-        CheckBox needsTv = new CheckBox("Needs TV");
-        CheckBox hasLab = new CheckBox("Has lab");
-        hasLab.setSelected(true);
-        HBox assignment = new HBox(8, batch, courseCode, courseName, labCount, hasLab, needsTv);
-        assignment.setAlignment(Pos.CENTER_LEFT);
-        HBox days = new HBox(8);
-        List<CheckBox> dayChecks = new ArrayList<>();
-        for (DayOfWeek day : Week.TEACHING_DAYS) {
-            CheckBox check = new CheckBox(labelDay(day).substring(0, 3));
-            check.setUserData(day);
-            check.setSelected(day != DayOfWeek.SATURDAY);
-            dayChecks.add(check);
-            days.getChildren().add(check);
-        }
+        TableColumn<CourseOffering, String> loadCol = new TableColumn<>("Weekly Load");
+        loadCol.setCellValueFactory(data -> {
+            Course course = repo.course(data.getValue().courseId());
+            String load = course.requiresLab() ? "2 lectures + 1 lab" : "2 lectures";
+            return new SimpleStringProperty(load);
+        });
+        TableColumn<CourseOffering, String> teacherCol = new TableColumn<>("Teachers");
+        teacherCol.setCellValueFactory(data -> {
+            CourseOffering offering = data.getValue();
+            if (offering.lecturerId() == null) {
+                return new SimpleStringProperty("Not assigned");
+            }
+            Course course = repo.course(offering.courseId());
+            String lab = offering.labInstructorId() != null ? ", Lab: " + repo.teacher(offering.labInstructorId()).name() : "";
+            return new SimpleStringProperty("Lecturer: " + repo.teacher(offering.lecturerId()).name() + lab);
+        });
+        table.getColumns().addAll(batchCol, courseCol, loadCol, teacherCol);
+        return table;
+    }
+
+    private VBox teacherAssignmentPanel() {
+        VBox panel = new VBox(10);
+        panel.getStyleClass().add("setup-panel");
+        Label title = new Label("Teacher Assignment");
+        title.getStyleClass().add("panel-title");
+        Label intro = new Label("Select a batch, then choose a course offering for that batch. Assign lecturers with per-day Morning or Afternoon availability.");
+        intro.getStyleClass().add("muted");
+        intro.setWrapText(true);
+
+        Program program = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
+        ComboBox<Batch> batchBox = batchComboBox(repo.batchesForProgram(program.id()));
+        ComboBox<CourseOffering> offeringBox = new ComboBox<>();
+        offeringBox.setConverter(courseOfferingConverter());
+        Runnable refreshOfferings = () -> {
+            offeringBox.getItems().clear();
+            if (batchBox.getValue() != null) {
+                offeringBox.getItems().setAll(repo.offeringsForBatch(batchBox.getValue().id()));
+                if (!offeringBox.getItems().isEmpty()) {
+                    offeringBox.setValue(offeringBox.getItems().getFirst());
+                }
+            }
+        };
+        batchBox.setOnAction(event -> refreshOfferings.run());
+        refreshOfferings.run();
+
+        TextField lecturerName = new TextField();
+        lecturerName.setPromptText("Lecturer name");
+        TextField lecturerEmail = new TextField();
+        lecturerEmail.setPromptText("Lecturer email");
+        VBox lecturerAvailability = createDayAvailabilityEditor("Lecturer availability");
 
         TextField labName = new TextField();
         labName.setPromptText("Lab instructor name");
         TextField labEmail = new TextField();
         labEmail.setPromptText("Lab instructor email");
-        ComboBox<String> labShift = new ComboBox<>();
-        labShift.getItems().addAll("Morning", "Afternoon", "Full day");
-        labShift.setValue("Morning");
-        HBox labFields = new HBox(8, labName, labEmail, labShift);
-        labFields.setAlignment(Pos.CENTER_LEFT);
-        HBox labDays = new HBox(8);
-        List<CheckBox> labDayChecks = new ArrayList<>();
-        for (DayOfWeek day : Week.TEACHING_DAYS) {
-            CheckBox check = new CheckBox(labelDay(day).substring(0, 3));
-            check.setUserData(day);
-            check.setSelected(day != DayOfWeek.SATURDAY);
-            labDayChecks.add(check);
-            labDays.getChildren().add(check);
-        }
-        VBox labBox = new VBox(8, labFields, labDays);
-        TitledPane labInstructorPane = new TitledPane("Lab Instructor", labBox);
-        labInstructorPane.setExpanded(true);
-        labInstructorPane.visibleProperty().bind(hasLab.selectedProperty());
-        labInstructorPane.managedProperty().bind(hasLab.selectedProperty());
+        VBox labAvailability = createDayAvailabilityEditor("Lab instructor availability");
+        TitledPane labPane = new TitledPane("Lab Instructor", new VBox(8,
+                new HBox(8, labName, labEmail), labAvailability));
+        labPane.setExpanded(true);
+        labPane.visibleProperty().bind(offeringBox.valueProperty().map(offering -> {
+            if (offering == null) {
+                return false;
+            }
+            return repo.course(offering.courseId()).requiresLab();
+        }));
+        labPane.managedProperty().bind(labPane.visibleProperty());
 
         Label status = new Label();
         status.getStyleClass().add("muted");
-        Button add = new Button("Save Assignment");
-        add.getStyleClass().add("primary-button");
-        add.setOnAction(event -> {
-            if (name.getText().isBlank() || email.getText().isBlank() || courseCode.getText().isBlank()
-                    || courseName.getText().isBlank() || batch.getValue() == null) {
-                status.setText("Enter lecturer, batch, course code, and course name first.");
+        Button save = new Button("Save Teacher Assignment");
+        save.getStyleClass().add("primary-button");
+        save.setOnAction(event -> {
+            if (batchBox.getValue() == null || offeringBox.getValue() == null) {
+                status.setText("Select a batch and course offering first.");
                 return;
             }
-            Set<DayOfWeek> selectedDays = dayChecks.stream()
-                    .filter(CheckBox::isSelected)
-                    .map(check -> (DayOfWeek) check.getUserData())
-                    .collect(Collectors.toSet());
-            if (selectedDays.isEmpty()) {
-                status.setText("Select at least one working day.");
+            if (lecturerName.getText().isBlank() || lecturerEmail.getText().isBlank()) {
+                status.setText("Enter lecturer name and email.");
                 return;
             }
-            Set<DayOfWeek> selectedLabDays = labDayChecks.stream()
-                    .filter(CheckBox::isSelected)
-                    .map(check -> (DayOfWeek) check.getUserData())
-                    .collect(Collectors.toSet());
-            if (hasLab.isSelected() && (labName.getText().isBlank() || labEmail.getText().isBlank() || selectedLabDays.isEmpty())) {
-                status.setText("Enter lab instructor name, email, and working days.");
+            Map<DayOfWeek, Set<String>> lecturerSlots = readAvailability(lecturerAvailability);
+            if (lecturerSlots.isEmpty()) {
+                status.setText("Select at least one working day for the lecturer and set Morning or Afternoon for each day.");
                 return;
             }
 
-            User user = User.of(UserRole.TEACHER, name.getText().trim(), email.getText().trim());
-            Teacher lecturer = new Teacher(Ids.next(), user.id(), user.name(), TeacherRole.LECTURER, availabilityFor(selectedDays, shift.getValue()));
-            repo.users.add(user);
-            repo.teachers.add(lecturer);
+            CourseOffering offering = offeringBox.getValue();
+            Course course = repo.course(offering.courseId());
             Teacher labInstructor = null;
-            if (hasLab.isSelected()) {
+            if (course.requiresLab()) {
+                if (labName.getText().isBlank() || labEmail.getText().isBlank()) {
+                    status.setText("Enter lab instructor name and email.");
+                    return;
+                }
+                Map<DayOfWeek, Set<String>> labSlots = readAvailability(labAvailability);
+                if (labSlots.isEmpty()) {
+                    status.setText("Select at least one working day for the lab instructor with Morning or Afternoon per day.");
+                    return;
+                }
                 User labUser = User.of(UserRole.TEACHER, labName.getText().trim(), labEmail.getText().trim());
-                labInstructor = new Teacher(Ids.next(), labUser.id(), labUser.name(), TeacherRole.LAB_INSTRUCTOR,
-                        availabilityFor(selectedLabDays, labShift.getValue()));
+                labInstructor = new Teacher(Ids.next(), labUser.id(), labUser.name(), TeacherRole.LAB_INSTRUCTOR, labSlots);
                 repo.users.add(labUser);
                 repo.teachers.add(labInstructor);
             }
-            Course course = upsertCourse(courseCode.getText().trim().toUpperCase(), courseName.getText().trim(),
-                    hasLab.isSelected(), needsTv.isSelected(), 1,
-                    hasLab.isSelected() ? parsePositiveInt(labCount.getText(), 1) : 0);
-            upsertOffering(batch.getValue(), course, lecturer, labInstructor);
+
+            User lecturerUser = User.of(UserRole.TEACHER, lecturerName.getText().trim(), lecturerEmail.getText().trim());
+            Teacher lecturer = new Teacher(Ids.next(), lecturerUser.id(), lecturerUser.name(), TeacherRole.LECTURER, lecturerSlots);
+            repo.users.add(lecturerUser);
+            repo.teachers.add(lecturer);
+
+            assignTeachersToOffering(offering, lecturer, labInstructor);
             repo.schedule.clear();
-            dashboardMessages = List.of(lecturer.name() + " assigned to " + course.code() + " - " + course.name()
-                    + " for " + batch.getValue().name() + ". Generate the schedule again to apply it.");
+            dashboardMessages = List.of(lecturer.name() + " assigned to " + course.code() + " for "
+                    + batchBox.getValue().name() + ". Generate the schedule again to apply it.");
             showAdmin();
         });
 
+        HBox batchRow = new HBox(8, new Label("Batch"), batchBox, new Label("Course"), offeringBox);
+        batchRow.setAlignment(Pos.CENTER_LEFT);
+        HBox lecturerRow = new HBox(8, lecturerName, lecturerEmail);
+        lecturerRow.setAlignment(Pos.CENTER_LEFT);
         TableView<Teacher> teachers = teacherTable();
         teachers.setMaxHeight(130);
-        panel.getChildren().addAll(title, fields, assignment, days, labInstructorPane, add, status, teachers);
+        panel.getChildren().addAll(title, intro, batchRow, new Label("Lecturer"), lecturerRow, lecturerAvailability,
+                labPane, save, status, teachers);
         return panel;
     }
 
-    private Course upsertCourse(String code, String name, boolean hasLab, boolean needsTv, int theoryCount, int labCount) {
+    private VBox createDayAvailabilityEditor(String heading) {
+        VBox box = new VBox(6);
+        Label header = new Label(heading + " — choose Morning or Afternoon independently for each day:");
+        header.getStyleClass().add("muted");
+        header.setWrapText(true);
+        box.getChildren().add(header);
+        List<DayAvailabilityControls> controls = new ArrayList<>();
+        for (DayOfWeek day : Week.TEACHING_DAYS) {
+            DayAvailabilityControls control = new DayAvailabilityControls(day);
+            controls.add(control);
+            HBox row = new HBox(12);
+            row.setAlignment(Pos.CENTER_LEFT);
+            row.getChildren().addAll(control.enabled, new Label("Shift:"), control.shift);
+            box.getChildren().add(row);
+        }
+        box.setUserData(controls);
+        return box;
+    }
+
+    private Map<DayOfWeek, Set<String>> readAvailability(VBox editor) {
+        @SuppressWarnings("unchecked")
+        List<DayAvailabilityControls> controls = (List<DayAvailabilityControls>) editor.getUserData();
+        Map<DayOfWeek, Set<String>> availability = new EnumMap<>(DayOfWeek.class);
+        for (DayAvailabilityControls control : controls) {
+            if (control.enabled.isSelected()) {
+                Set<String> slots = "Afternoon".equals(control.shift.getValue())
+                        ? Set.of("A1", "A2")
+                        : Set.of("M1", "M2", "M3");
+                availability.put(control.day, slots);
+            }
+        }
+        return availability;
+    }
+
+    private final class DayAvailabilityControls {
+        final DayOfWeek day;
+        final CheckBox enabled;
+        final ComboBox<String> shift;
+
+        DayAvailabilityControls(DayOfWeek day) {
+            this.day = day;
+            enabled = new CheckBox(labelDay(day));
+            shift = new ComboBox<>();
+            shift.getItems().addAll("Morning", "Afternoon");
+            shift.setValue("Morning");
+            shift.setDisable(true);
+            enabled.selectedProperty().addListener((obs, oldValue, selected) -> shift.setDisable(!selected));
+        }
+    }
+
+    private Course upsertCourse(String code, String name, boolean requiresLab, boolean needsTv) {
         Course existing = repo.courses.stream()
                 .filter(course -> course.code().equalsIgnoreCase(code))
                 .findFirst()
                 .orElse(null);
-        Course course = new Course(existing == null ? Ids.next() : existing.id(), code, name, hasLab, needsTv, theoryCount, labCount);
+        Course course = Course.create(existing == null ? Ids.next() : existing.id(), code, name, requiresLab, needsTv);
         if (existing != null) {
             repo.courses.remove(existing);
         }
@@ -431,82 +674,40 @@ public final class AcseApplication extends Application {
         return course;
     }
 
-    private void upsertOffering(Batch batch, Course course, Teacher lecturer, Teacher labInstructor) {
-        CourseOffering existing = repo.offerings.stream()
-                .filter(offering -> offering.batchId().equals(batch.id()) && offering.courseId().equals(course.id()))
-                .findFirst()
-                .orElse(null);
-        String lecturerId = lecturer.id();
+    private void assignTeachersToOffering(CourseOffering offering, Teacher lecturer, Teacher labInstructor) {
+        Course course = repo.course(offering.courseId());
         String labInstructorId = course.requiresLab() && labInstructor != null ? labInstructor.id() : null;
-        if (existing != null) {
-            repo.offerings.remove(existing);
-        }
-        repo.offerings.add(new CourseOffering(Ids.next(), batch.id(), course.id(), lecturerId, labInstructorId));
+        repo.offerings.remove(offering);
+        repo.offerings.add(new CourseOffering(offering.id(), offering.batchId(), offering.courseId(), lecturer.id(), labInstructorId));
     }
 
-    private int parsePositiveInt(String value, int fallback) {
-        try {
-            return Math.max(0, Integer.parseInt(value.trim()));
-        } catch (NumberFormatException ignored) {
-            return fallback;
-        }
+    private String formatTeacherAvailability(Teacher teacher) {
+        return teacher.availability().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey())
+                .map(entry -> labelDay(entry.getKey()).substring(0, 3) + " "
+                        + (entry.getValue().contains("M1") ? "Morning" : "Afternoon"))
+                .collect(Collectors.joining(", "));
     }
 
-    private VBox batchSetupPanel() {
-        VBox box = new VBox(8);
-        Label title = new Label("Batches");
-        title.getStyleClass().add("panel-title");
-        TextField batchName = new TextField();
-        batchName.setPromptText("Batch code, e.g. DRB2504");
-        ComboBox<ProgramType> programType = new ComboBox<>();
-        programType.getItems().addAll(ProgramType.values());
-        programType.setValue(ProgramType.SEMESTER);
-        ComboBox<String> sections = new ComboBox<>();
-        sections.getItems().addAll("No section", "Section A and B");
-        sections.setValue("Section A and B");
-        Button addBatch = new Button("Add Batch");
-        addBatch.getStyleClass().add("primary-button");
-        Label status = new Label();
-        status.getStyleClass().add("muted");
-        HBox fields = new HBox(8, batchName, programType, sections, addBatch);
-        fields.setAlignment(Pos.CENTER_LEFT);
-
-        addBatch.setOnAction(event -> {
-            if (batchName.getText().isBlank()) {
-                status.setText("Enter a batch code first.");
-                return;
+    private javafx.util.StringConverter<CourseOffering> courseOfferingConverter() {
+        return new javafx.util.StringConverter<>() {
+            @Override
+            public String toString(CourseOffering value) {
+                if (value == null) {
+                    return "";
+                }
+                Course course = repo.course(value.courseId());
+                return course.code() + " - " + course.name();
             }
-            Program program = repo.programs.stream()
-                    .filter(candidate -> candidate.type() == programType.getValue())
-                    .findFirst()
-                    .orElseThrow();
-            List<String> sectionNames = sections.getValue().equals("No section")
-                    ? List.of("Main")
-                    : List.of("Section A", "Section B");
-            Batch batch = SeedData.addBatch(repo, program, batchName.getText().trim().toUpperCase(), sectionNames);
-            repo.schedule.clear();
-            dashboardMessages = List.of(batch.name() + " added with " + String.join(", ", sectionNames)
-                    + ". Add teacher/course assignments to include it in generation.");
-            showAdmin();
-        });
 
-        TableView<Batch> batches = batchTable();
-        batches.setMaxHeight(150);
-        box.getChildren().addAll(title, fields, status, batches);
-        return box;
-    }
-
-    private Map<DayOfWeek, Set<String>> availabilityFor(Set<DayOfWeek> days, String shift) {
-        Map<DayOfWeek, Set<String>> availability = new EnumMap<>(DayOfWeek.class);
-        Set<String> slots = switch (shift) {
-            case "Afternoon" -> Set.of("A1", "A2");
-            case "Full day" -> Set.of("M1", "M2", "M3", "A1", "A2");
-            default -> Set.of("M1", "M2", "M3");
+            @Override
+            public CourseOffering fromString(String value) {
+                return repo.offerings.stream()
+                        .filter(offering -> toString(offering).equals(value))
+                        .findFirst()
+                        .orElse(null);
+            }
         };
-        for (DayOfWeek day : days) {
-            availability.put(day, slots);
-        }
-        return availability;
     }
 
     private TableView<Teacher> teacherTable() {
@@ -521,22 +722,21 @@ public final class AcseApplication extends Application {
                 .sorted()
                 .map(day -> labelDay(day).substring(0, 3))
                 .collect(Collectors.joining(", "))));
-        TableColumn<Teacher, String> slots = new TableColumn<>("Slots");
-        slots.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().availability().values().stream()
-                .findFirst()
-                .map(value -> String.join(", ", value))
-                .orElse("None")));
+        TableColumn<Teacher, String> slots = new TableColumn<>("Availability");
+        slots.setCellValueFactory(data -> new SimpleStringProperty(formatTeacherAvailability(data.getValue())));
         table.getColumns().addAll(name, role, days, slots);
         return table;
     }
 
-    private TableView<Batch> batchTable() {
+    private TableView<Batch> batchTable(String programId) {
         TableView<Batch> table = new TableView<>();
-        table.getItems().setAll(repo.batches);
+        table.getItems().setAll(repo.batches.stream()
+                .filter(batch -> batch.programId().equals(programId))
+                .toList());
         TableColumn<Batch, String> name = new TableColumn<>("Batch");
         name.setCellValueFactory(data -> new SimpleStringProperty(data.getValue().name()));
-        TableColumn<Batch, String> program = new TableColumn<>("Program");
-        program.setCellValueFactory(data -> new SimpleStringProperty(repo.program(data.getValue().programId()).type().name()));
+        TableColumn<Batch, String> program = new TableColumn<>("Period");
+        program.setCellValueFactory(data -> new SimpleStringProperty(repo.program(data.getValue().programId()).displayLabel()));
         TableColumn<Batch, String> sections = new TableColumn<>("Sections");
         sections.setCellValueFactory(data -> new SimpleStringProperty(repo.sections.stream()
                 .filter(section -> section.batchId().equals(data.getValue().id()))
@@ -563,12 +763,17 @@ public final class AcseApplication extends Application {
     }
 
     private void showStudent() {
-        StudentProfile profile = repo.studentProfiles.stream()
+        Optional<StudentProfile> profile = repo.studentProfiles.stream()
                 .filter(student -> student.userId().equals(currentUser.id()))
-                .findFirst()
-                .orElseThrow();
+                .findFirst();
+        if (profile.isEmpty()) {
+            VBox page = new VBox(14, header("Student View", "No student profile linked to this account yet."));
+            page.getStyleClass().add("page");
+            root.setCenter(page);
+            return;
+        }
         List<ScheduleItem> mine = repo.schedule.stream()
-                .filter(item -> profile.sectionId().equals(item.sectionId()) || profile.labGroupId().equals(item.labGroupId()))
+                .filter(item -> profile.get().sectionId().equals(item.sectionId()) || profile.get().labGroupId().equals(item.labGroupId()))
                 .toList();
         VBox page = new VBox(14, header("Student View", "Section theory and lab-group practicals"), weekView(repo.payloadFor(mine)));
         page.getStyleClass().add("page");

@@ -1,6 +1,5 @@
 package edu.hilcoe.acse;
 
-import java.time.LocalDate;
 import java.util.List;
 
 final class SeedData {
@@ -16,30 +15,6 @@ final class SeedData {
 
         addLectureRooms(repo, "201", "202", "203", "301", "302", "303", "401", "402", "601");
         addLabs(repo, "204", "304", "404", "504");
-
-        Program term = new Program(Ids.next(), "Term Program", ProgramType.TERM, "2026/27",
-                LocalDate.of(2026, 9, 1), LocalDate.of(2026, 12, 20), 16, 3, 4);
-        Program semester = new Program(Ids.next(), "Semester Program", ProgramType.SEMESTER, "2026/27",
-                LocalDate.of(2026, 9, 1), LocalDate.of(2027, 1, 30), 20, 5, 6);
-        repo.programs.add(term);
-        repo.programs.add(semester);
-
-        List<Batch> seededBatches = List.of(
-                addBatch(repo, semester, "DRBSE2502", List.of("Section A", "Section B")),
-                addBatch(repo, semester, "DRB2502", List.of("Main")),
-                addBatch(repo, semester, "DR2503", List.of("Section A", "Section B")),
-                addBatch(repo, semester, "DRBSE2503", List.of("Section A", "Section B")),
-                addBatch(repo, term, "DRB2301", List.of("Main")),
-                addBatch(repo, term, "DRBSE2301", List.of("Main")),
-                addBatch(repo, term, "DRB2302", List.of("Section A", "Section B")),
-                addBatch(repo, term, "DRBSE2302", List.of("Section A", "Section B")),
-                addBatch(repo, term, "DRB2401", List.of("Main")),
-                addBatch(repo, term, "DRBSE2401", List.of("Section A", "Section B"))
-        );
-
-        Section firstSection = repo.sections.stream().filter(section -> section.batchId().equals(seededBatches.getFirst().id())).findFirst().orElseThrow();
-        LabGroup firstGroup = repo.labGroups.stream().filter(group -> group.sectionId().equals(firstSection.id())).findFirst().orElseThrow();
-        repo.studentProfiles.add(new StudentProfile(student.id(), seededBatches.getFirst().id(), firstSection.id(), firstGroup.id()));
 
         return repo;
     }

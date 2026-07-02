@@ -24,6 +24,9 @@ mvn javafx:run
 
 ## What is included
 
+- Two-step admin setup: Academic Setup (year, semester, batches, course offerings) then Teacher Assignments.
+- Per-day teacher availability with independent Morning or Afternoon shift for each selected day.
+- Fixed weekly load: 2 lectures without lab, or 2 lectures + 1 lab when lab is required.
 - Unified login for Admin, Teacher, and Student.
 - Google Calendar style week grid from Monday to Saturday.
 - Admin dashboard with room occupancy, schedule filters, auto-scheduler trigger, and conflict suggestions.
