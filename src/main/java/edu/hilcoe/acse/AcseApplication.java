@@ -366,6 +366,7 @@ public final class AcseApplication extends Application {
 
     private VBox batchSection() {
         VBox box = new VBox(8);
+        Program activeProgram = repo.findOrCreateProgram(setupAcademicYear, setupSemester);
         TextField batchName = new TextField();
         batchName.setPromptText("Batch code, e.g. DRB2504");
         ComboBox<String> sections = new ComboBox<>();
@@ -392,7 +393,7 @@ public final class AcseApplication extends Application {
         });
         HBox fields = new HBox(8, batchName, sections, addBatch);
         fields.setAlignment(Pos.CENTER_LEFT);
-        TableView<Batch> batches = batchTable(program.id());
+        TableView<Batch> batches = batchTable(activeProgram.id());
         batches.setMaxHeight(150);
         box.getChildren().addAll(fields, status, batches);
         return box;
