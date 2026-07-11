@@ -146,7 +146,13 @@ final class ScheduleRules {
         if (item.kind() == SessionKind.EXAM) {
             return false;
         }
-        return Objects.equals(instance.entityId(), item.kind() == SessionKind.THEORY ? item.sectionId() : item.labGroupId());
+        if (instance.kind() == SessionKind.THEORY) {
+            return Objects.equals(instance.sectionId(), item.sectionId());
+        }
+        if (item.kind() == SessionKind.THEORY) {
+            return Objects.equals(instance.sectionId(), item.sectionId());
+        }
+        return Objects.equals(instance.labGroupId(), item.labGroupId());
     }
 
     static boolean sameCourseForSameEntity(ScheduleItem item, ClassInstance instance) {

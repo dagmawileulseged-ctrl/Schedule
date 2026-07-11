@@ -77,7 +77,7 @@ final class ScheduleEngine {
                             .toList();
                     for (LabGroup group : groups) {
                         for (int i = 0; i < course.weeklyLabCount(); i++) {
-                            instances.add(new ClassInstance(Ids.next(), offering.id(), course.id(), SessionKind.LAB, null,
+                            instances.add(new ClassInstance(Ids.next(), offering.id(), course.id(), SessionKind.LAB, section.id(),
                                     group.id(), offering.labInstructorId(), group.size(), false));
                         }
                     }
