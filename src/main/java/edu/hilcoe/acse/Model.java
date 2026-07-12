@@ -160,13 +160,43 @@ final class ScheduleRules {
     }
 
     static int dailyLoad(List<ScheduleItem> items, ClassInstance instance, DayOfWeek day) {
-        int load = 0;
+        if (instance.kind() == SessionKind.LAB) {
+            return (int) items.stream()
+                    .filter(item -> item.day() == day)
+                    .filter(item -> item.kind() == SessionKind.THEORY && Objects.equals(item.sectionId(), instance.sectionId())
+                            || item.kind() == SessionKind.LAB && Objects.equals(item.labGroupId(), instance.labGroupId()))
+                    .count();
+        }
+
+        int theoryLoad = (int) items.stream()
+                .filter(item -> item.day() == day)
+                .filter(item -> item.kind() == SessionKind.THEORY)
+                .filter(item -> Objects.equals(item.sectionId(), instance.sectionId()))
+                .count();
+
+        Set<String> labGroups = new java.util.HashSet<>();
         for (ScheduleItem item : items) {
-            if (item.day() == day && sameEntity(item, instance)) {
-                load++;
+            if (item.labGroupId() != null && Objects.equals(item.sectionId(), instance.sectionId())) {
+                labGroups.add(item.labGroupId());
             }
         }
-        return load;
+        if (instance.labGroupId() != null) {
+            labGroups.add(instance.labGroupId());
+        }
+        if (labGroups.isEmpty()) {
+            return theoryLoad;
+        }
+
+        int maxLoad = theoryLoad;
+        for (String labGroup : labGroups) {
+            int labLoad = (int) items.stream()
+                    .filter(item -> item.day() == day)
+                    .filter(item -> item.kind() == SessionKind.LAB)
+                    .filter(item -> Objects.equals(item.labGroupId(), labGroup))
+                    .count();
+            maxLoad = Math.max(maxLoad, theoryLoad + labLoad);
+        }
+        return maxLoad;
     }
 
     static List<String> teacherBlockWarnings(List<ScheduleItem> items) {

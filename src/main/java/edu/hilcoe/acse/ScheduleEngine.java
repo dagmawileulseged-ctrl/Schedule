@@ -3,44 +3,71 @@ package edu.hilcoe.acse;
 import java.time.DayOfWeek;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
+import java.util.Random;
 import java.util.Set;
 
 final class ScheduleEngine {
+    private static final int MAX_SEARCH_NODES = 50_000;
+
     private final AcseRepository repo;
+    private int searchNodes;
+    private boolean searchLimitHit;
 
     ScheduleEngine(AcseRepository repo) {
         this.repo = repo;
     }
 
     SolverResult generate() {
+        searchNodes = 0;
+        searchLimitHit = false;
         List<ClassInstance> instances = buildClassInstances();
         List<ScheduleItem> placed = new ArrayList<>();
         List<String> suggestions = new ArrayList<>();
         List<String> warnings = new ArrayList<>();
+        placed = randomizedGreedyPlacement(instances);
+        if (placed.size() == instances.size()) {
+            placed.forEach(item -> warnings.addAll(item.warnings()));
+            warnings.addAll(ScheduleRules.teacherBlockWarnings(placed));
+            repo.schedule.clear();
+            repo.schedule.addAll(placed);
+            repo.lastSuggestions.clear();
+            repo.lastWarnings.clear();
+            repo.lastWarnings.addAll(warnings);
+            return new SolverResult(List.copyOf(placed), List.of(), List.copyOf(warnings));
+        }
+        placed = new ArrayList<>();
 
-        while (!instances.isEmpty()) {
-            ClassInstance next = instances.stream()
-                    .min(Comparator.comparingInt(instance -> validCandidates(instance, placed).size()))
-                    .orElseThrow();
-            List<Candidate> candidates = validCandidates(next, placed);
-            if (candidates.isEmpty()) {
-                suggestions.addAll(conflictSuggestions(next, placed));
-                return new SolverResult(List.copyOf(placed), suggestions, warnings);
+        if (!placeAll(instances, placed)) {
+            List<ScheduleItem> greedyPlaced = greedyPlacement(instances);
+            if (greedyPlaced.size() == instances.size()) {
+                greedyPlaced.forEach(item -> warnings.addAll(item.warnings()));
+                warnings.addAll(ScheduleRules.teacherBlockWarnings(greedyPlaced));
+                repo.schedule.clear();
+                repo.schedule.addAll(greedyPlaced);
+                repo.lastSuggestions.clear();
+                repo.lastWarnings.clear();
+                repo.lastWarnings.addAll(warnings);
+                return new SolverResult(List.copyOf(greedyPlaced), List.of(), List.copyOf(warnings));
             }
-
-            Candidate best = candidates.stream()
-                    .max(Comparator.comparingInt(Candidate::score))
-                    .orElseThrow();
-            placed.add(new ScheduleItem(Ids.next(), next.offeringId(), next.courseId(), next.sectionId(), next.labGroupId(),
-                    best.room().id(), next.teacherId(), best.day(), best.slot(), next.kind(), best.warnings()));
-            warnings.addAll(best.warnings());
-            instances.remove(next);
+            if (greedyPlaced.size() > placed.size()) {
+                placed = greedyPlaced;
+            }
+            List<ScheduleItem> partialPlacement = placed;
+            ClassInstance blocked = instances.stream()
+                    .min(Comparator.comparingInt(instance -> validCandidates(instance, partialPlacement).size()))
+                    .orElse(null);
+            if (blocked != null) {
+                suggestions.addAll(conflictSuggestions(blocked, placed));
+            }
+            if (searchLimitHit) {
+                suggestions.add("The scheduler tried many possible placements but could not finish. Relax one constraint, add more available days, or split the setup into fewer course offerings.");
+            }
+            return new SolverResult(List.copyOf(placed), suggestions, warnings);
         }
 
+        placed.forEach(item -> warnings.addAll(item.warnings()));
         warnings.addAll(ScheduleRules.teacherBlockWarnings(placed));
         repo.schedule.clear();
         repo.schedule.addAll(placed);
@@ -48,6 +75,69 @@ final class ScheduleEngine {
         repo.lastWarnings.clear();
         repo.lastWarnings.addAll(warnings);
         return new SolverResult(List.copyOf(placed), List.of(), List.copyOf(warnings));
+    }
+
+    private List<ScheduleItem> randomizedGreedyPlacement(List<ClassInstance> instances) {
+        List<ScheduleItem> best = List.of();
+        for (int attempt = 0; attempt < 800; attempt++) {
+            Random random = new Random(attempt);
+            List<ClassInstance> remaining = new ArrayList<>(instances);
+            List<ScheduleItem> placed = new ArrayList<>();
+            while (!remaining.isEmpty()) {
+                int smallestDomain = Integer.MAX_VALUE;
+                List<ClassInstance> tied = new ArrayList<>();
+                for (ClassInstance instance : remaining) {
+                    int size = validCandidates(instance, placed).size();
+                    if (size < smallestDomain) {
+                        smallestDomain = size;
+                        tied.clear();
+                        tied.add(instance);
+                    } else if (size == smallestDomain) {
+                        tied.add(instance);
+                    }
+                }
+                if (smallestDomain == 0) {
+                    break;
+                }
+                ClassInstance next = tied.get(random.nextInt(tied.size()));
+                List<Candidate> candidates = validCandidates(next, placed).stream()
+                        .sorted(Comparator.comparingInt(Candidate::score).reversed())
+                        .toList();
+                int choiceLimit = Math.min(5, candidates.size());
+                Candidate selected = candidates.get(random.nextInt(choiceLimit));
+                placed.add(new ScheduleItem(Ids.next(), next.offeringId(), next.courseId(), next.sectionId(), next.labGroupId(),
+                        selected.room().id(), next.teacherId(), selected.day(), selected.slot(), next.kind(), selected.warnings()));
+                remaining.remove(next);
+            }
+            if (placed.size() > best.size()) {
+                best = placed;
+            }
+            if (placed.size() == instances.size()) {
+                return placed;
+            }
+        }
+        return best;
+    }
+
+    private List<ScheduleItem> greedyPlacement(List<ClassInstance> instances) {
+        List<ClassInstance> remaining = new ArrayList<>(instances);
+        List<ScheduleItem> placed = new ArrayList<>();
+        while (!remaining.isEmpty()) {
+            ClassInstance next = remaining.stream()
+                    .min(Comparator.comparingInt(instance -> validCandidates(instance, placed).size()))
+                    .orElseThrow();
+            List<Candidate> candidates = validCandidates(next, placed);
+            if (candidates.isEmpty()) {
+                return placed;
+            }
+            Candidate best = candidates.stream()
+                    .max(Comparator.comparingInt(Candidate::score))
+                    .orElseThrow();
+            placed.add(new ScheduleItem(Ids.next(), next.offeringId(), next.courseId(), next.sectionId(), next.labGroupId(),
+                    best.room().id(), next.teacherId(), best.day(), best.slot(), next.kind(), best.warnings()));
+            remaining.remove(next);
+        }
+        return placed;
     }
 
     List<ClassInstance> buildClassInstances() {
@@ -87,6 +177,39 @@ final class ScheduleEngine {
         return instances;
     }
 
+    private boolean placeAll(List<ClassInstance> remaining, List<ScheduleItem> placed) {
+        if (++searchNodes > MAX_SEARCH_NODES) {
+            searchLimitHit = true;
+            return false;
+        }
+        if (remaining.isEmpty()) {
+            return true;
+        }
+
+        ClassInstance next = remaining.stream()
+                .min(Comparator.comparingInt(instance -> validCandidates(instance, placed).size()))
+                .orElseThrow();
+        List<Candidate> candidates = validCandidates(next, placed).stream()
+                .sorted(Comparator.comparingInt(Candidate::score).reversed())
+                .toList();
+        if (candidates.isEmpty()) {
+            return false;
+        }
+
+        List<ClassInstance> nextRemaining = new ArrayList<>(remaining);
+        nextRemaining.remove(next);
+        for (Candidate candidate : candidates) {
+            ScheduleItem item = new ScheduleItem(Ids.next(), next.offeringId(), next.courseId(), next.sectionId(), next.labGroupId(),
+                    candidate.room().id(), next.teacherId(), candidate.day(), candidate.slot(), next.kind(), candidate.warnings());
+            placed.add(item);
+            if (placeAll(nextRemaining, placed)) {
+                return true;
+            }
+            placed.remove(placed.size() - 1);
+        }
+        return false;
+    }
+
     private List<Candidate> validCandidates(ClassInstance instance, List<ScheduleItem> placed) {
         List<Candidate> candidates = new ArrayList<>();
         Teacher teacher = repo.teacher(instance.teacherId());
@@ -99,7 +222,7 @@ final class ScheduleEngine {
                 if (ScheduleRules.dailyLoad(placed, instance, day) >= 3) {
                     continue;
                 }
-                if (placed.stream().anyMatch(item -> item.day() == day && ScheduleRules.sameCourseForSameEntity(item, instance))) {
+                if (hasSameTheoryCourseOnDay(placed, instance, day)) {
                     continue;
                 }
                 if (placed.stream().anyMatch(item -> item.day() == day && item.slot().id().equals(slot.id())
@@ -120,6 +243,34 @@ final class ScheduleEngine {
             }
         }
         return candidates;
+    }
+
+    private boolean hasSameTheoryCourseOnDay(List<ScheduleItem> placed, ClassInstance instance, DayOfWeek day) {
+        if (instance.kind() != SessionKind.THEORY) {
+            return false;
+        }
+        return placed.stream()
+                .filter(item -> item.day() == day)
+                .filter(item -> item.kind() == SessionKind.THEORY)
+                .anyMatch(item -> item.courseId().equals(instance.courseId())
+                        && item.sectionId().equals(instance.sectionId()));
+    }
+
+    private boolean hasBackToBackStudentSession(List<ScheduleItem> placed, ClassInstance instance, DayOfWeek day, TimeSlot slot) {
+        return placed.stream()
+                .filter(item -> item.day() == day)
+                .filter(item -> ScheduleRules.sameEntity(item, instance))
+                .anyMatch(item -> Math.abs(slotIndex(item.slot()) - slotIndex(slot)) == 1);
+    }
+
+    private int slotIndex(TimeSlot slot) {
+        List<TimeSlot> grid = TimeSlot.grid();
+        for (int i = 0; i < grid.size(); i++) {
+            if (grid.get(i).id().equals(slot.id())) {
+                return i;
+            }
+        }
+        return -10;
     }
 
     private boolean roomFits(Room room, ClassInstance instance) {
@@ -154,6 +305,10 @@ final class ScheduleEngine {
             score -= 15;
             warnings.add("Soft warning: " + repo.course(instance.courseId()).name()
                     + " needs TV, but " + room.name() + " is BoardOnly.");
+        }
+
+        if (hasBackToBackStudentSession(placed, instance, day, slot)) {
+            score -= 25;
         }
 
         if (slot.block() == Block.MORNING) {
@@ -202,6 +357,9 @@ final class ScheduleEngine {
                 moving.sectionId(), moving.labGroupId(), moving.teacherId(), audienceSize(moving), repo.course(moving.courseId()).needsTv());
         List<ScheduleItem> others = basis.stream().filter(item -> !item.id().equals(moving.id())).toList();
         if (ScheduleRules.dailyLoad(others, instance, day) >= 3) {
+            return false;
+        }
+        if (hasSameTheoryCourseOnDay(others, instance, day)) {
             return false;
         }
         return others.stream().noneMatch(item -> item.day() == day && item.slot().id().equals(slot.id())

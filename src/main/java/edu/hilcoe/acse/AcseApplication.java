@@ -2,6 +2,7 @@ package edu.hilcoe.acse;
 
 import javafx.application.Application;
 import javafx.beans.property.SimpleStringProperty;
+import javafx.concurrent.Task;
 import javafx.geometry.Insets;
 import javafx.geometry.Pos;
 import javafx.scene.Scene;
@@ -53,6 +54,7 @@ public final class AcseApplication extends Application {
     private String selectedSectionFilter = "All Sections";
     private String setupAcademicYear = "2026/27";
     private SemesterPeriod setupSemester = SemesterPeriod.FIRST;
+    private boolean generationInProgress;
     private User currentUser;
 
     @Override
@@ -157,6 +159,9 @@ public final class AcseApplication extends Application {
         generate.getStyleClass().add("primary-button");
         Button exam = new Button("Apply Exam Override");
         Button clear = new Button("Clear Schedule");
+        generate.setDisable(generationInProgress);
+        exam.setDisable(generationInProgress);
+        clear.setDisable(generationInProgress);
         ComboBox<String> filterType = new ComboBox<>();
         filterType.getItems().addAll("All", "Teacher", "Batch", "Course");
         filterType.setValue(selectedFilterType);
@@ -205,11 +210,7 @@ public final class AcseApplication extends Application {
                 showAdmin();
                 return;
             }
-            SolverResult result = scheduler.generate();
-            dashboardMessages = result.success()
-                    ? result.warnings()
-                    : result.suggestions().stream().map(suggestion -> "Conflict: " + suggestion).toList();
-            showAdmin();
+            startScheduleGeneration(generate, exam, clear, warnings);
         });
         exam.setOnAction(event -> {
             if (repo.offerings.isEmpty()) {
@@ -218,7 +219,13 @@ public final class AcseApplication extends Application {
                 return;
             }
             if (repo.schedule.isEmpty()) {
-                scheduler.generate();
+                try {
+                    scheduler.generate();
+                } catch (RuntimeException exception) {
+                    dashboardMessages = List.of("Schedule generation stopped: " + exception.getMessage());
+                    showAdmin();
+                    return;
+                }
             }
             Course course = repo.courses.getFirst();
             CourseOffering offering = repo.offerings.getFirst();
@@ -246,6 +253,41 @@ public final class AcseApplication extends Application {
         VBox.setVgrow(tabs, Priority.ALWAYS);
         root.setCenter(page);
         root.setLeft(sidebar());
+    }
+
+    private void startScheduleGeneration(Button generate, Button exam, Button clear, ListView<String> warnings) {
+        generationInProgress = true;
+        generate.setDisable(true);
+        exam.setDisable(true);
+        clear.setDisable(true);
+        dashboardMessages = List.of("Generating schedule. You can wait here; the app will stay responsive.");
+        warnings.getItems().setAll(dashboardMessages);
+
+        Task<SolverResult> task = new Task<>() {
+            @Override
+            protected SolverResult call() {
+                return scheduler.generate();
+            }
+        };
+        task.setOnSucceeded(event -> {
+            generationInProgress = false;
+            SolverResult result = task.getValue();
+            dashboardMessages = result.success()
+                    ? result.warnings()
+                    : result.suggestions().stream().map(suggestion -> "Conflict: " + suggestion).toList();
+            showAdmin();
+        });
+        task.setOnFailed(event -> {
+            generationInProgress = false;
+            Throwable error = task.getException();
+            String message = error == null || error.getMessage() == null ? "Unknown error" : error.getMessage();
+            dashboardMessages = List.of("Schedule generation stopped: " + message);
+            showAdmin();
+        });
+
+        Thread thread = new Thread(task, "schedule-generator");
+        thread.setDaemon(true);
+        thread.start();
     }
 
     private Tab tab(String title, javafx.scene.Node content) {
@@ -576,20 +618,16 @@ public final class AcseApplication extends Application {
 
         TextField lecturerName = new TextField();
         lecturerName.setPromptText("Lecturer name");
-        TextField lecturerEmail = new TextField();
-        lecturerEmail.setPromptText("Lecturer email");
         VBox lecturerAvailability = createDayAvailabilityEditor("Lecturer availability");
 
         TextField labName = new TextField();
         labName.setPromptText("Lab instructor name");
-        TextField labEmail = new TextField();
-        labEmail.setPromptText("Lab instructor email");
         VBox labAvailability = createDayAvailabilityEditor("Lab instructor availability");
         Label labRequirement = new Label();
         labRequirement.getStyleClass().add("muted");
         labRequirement.setWrapText(true);
         TitledPane labPane = new TitledPane("Lab Instructor", new VBox(8,
-                labRequirement, new HBox(8, labName, labEmail), labAvailability));
+                labRequirement, labName, labAvailability));
         labPane.setExpanded(true);
         Runnable refreshLabPane = () -> {
             CourseOffering selected = offeringBox.getValue();
@@ -620,8 +658,8 @@ public final class AcseApplication extends Application {
                 status.setText("Select a batch and course offering first.");
                 return;
             }
-            if (lecturerName.getText().isBlank() || lecturerEmail.getText().isBlank()) {
-                status.setText("Enter lecturer name and email.");
+            if (lecturerName.getText().isBlank()) {
+                status.setText("Enter lecturer name.");
                 return;
             }
             Map<DayOfWeek, Set<String>> lecturerSlots = readAvailability(lecturerAvailability);
@@ -634,8 +672,8 @@ public final class AcseApplication extends Application {
             Course course = repo.course(offering.courseId());
             Teacher labInstructor = null;
             if (course.requiresLab()) {
-                if (labName.getText().isBlank() || labEmail.getText().isBlank()) {
-                    status.setText("Enter lab instructor name and email.");
+                if (labName.getText().isBlank()) {
+                    status.setText("Enter lab instructor name.");
                     return;
                 }
                 Map<DayOfWeek, Set<String>> labSlots = readAvailability(labAvailability);
@@ -643,13 +681,13 @@ public final class AcseApplication extends Application {
                     status.setText("Select at least one working day for the lab instructor with Morning or Afternoon per day.");
                     return;
                 }
-                User labUser = User.of(UserRole.TEACHER, labName.getText().trim(), labEmail.getText().trim());
+                User labUser = User.of(UserRole.TEACHER, labName.getText().trim(), generatedTeacherEmail(labName.getText()));
                 labInstructor = new Teacher(Ids.next(), labUser.id(), labUser.name(), TeacherRole.LAB_INSTRUCTOR, labSlots);
                 repo.users.add(labUser);
                 repo.teachers.add(labInstructor);
             }
 
-            User lecturerUser = User.of(UserRole.TEACHER, lecturerName.getText().trim(), lecturerEmail.getText().trim());
+            User lecturerUser = User.of(UserRole.TEACHER, lecturerName.getText().trim(), generatedTeacherEmail(lecturerName.getText()));
             Teacher lecturer = new Teacher(Ids.next(), lecturerUser.id(), lecturerUser.name(), TeacherRole.LECTURER, lecturerSlots);
             repo.users.add(lecturerUser);
             repo.teachers.add(lecturer);
@@ -666,13 +704,18 @@ public final class AcseApplication extends Application {
 
         HBox batchRow = new HBox(8, new Label("Batch"), batchBox, new Label("Course"), offeringBox);
         batchRow.setAlignment(Pos.CENTER_LEFT);
-        HBox lecturerRow = new HBox(8, lecturerName, lecturerEmail);
+        HBox lecturerRow = new HBox(8, lecturerName);
         lecturerRow.setAlignment(Pos.CENTER_LEFT);
         TableView<Teacher> teachers = teacherTable();
         teachers.setMaxHeight(130);
         panel.getChildren().addAll(title, intro, batchRow, new Label("Lecturer"), lecturerRow, lecturerAvailability,
                 labPane, save, status, teachers);
         return panel;
+    }
+
+    private String generatedTeacherEmail(String name) {
+        String safeName = name.trim().toLowerCase().replaceAll("[^a-z0-9]+", ".");
+        return safeName.isBlank() ? Ids.next() + "@acse.local" : safeName + "@acse.local";
     }
 
     private VBox createDayAvailabilityEditor(String heading) {
