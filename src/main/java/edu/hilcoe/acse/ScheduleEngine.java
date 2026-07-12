@@ -3,11 +3,8 @@ package edu.hilcoe.acse;
 import java.time.DayOfWeek;
 import java.util.ArrayList;
 import java.util.Comparator;
-import java.util.HashMap;
-import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
-import java.util.Set;
+import java.util.Objects;
 
 final class ScheduleEngine {
     private final AcseRepository repo;
@@ -41,7 +38,11 @@ final class ScheduleEngine {
             instances.remove(next);
         }
 
-        warnings.addAll(ScheduleRules.teacherBlockWarnings(placed));
+        List<String> finalClashes = studentClashes(placed);
+        if (!finalClashes.isEmpty()) {
+            return new SolverResult(List.copyOf(placed), finalClashes, warnings);
+        }
+
         repo.schedule.clear();
         repo.schedule.addAll(placed);
         repo.lastSuggestions.clear();
@@ -96,14 +97,11 @@ final class ScheduleEngine {
                 if (!teacher.isAvailable(day, slot)) {
                     continue;
                 }
-                if (ScheduleRules.dailyLoad(placed, instance, day) >= 3) {
-                    continue;
-                }
-                if (placed.stream().anyMatch(item -> item.day() == day && ScheduleRules.sameCourseForSameEntity(item, instance))) {
+                if (dailyLoad(placed, instance, day) >= 3) {
                     continue;
                 }
                 if (placed.stream().anyMatch(item -> item.day() == day && item.slot().id().equals(slot.id())
-                        && (item.teacherId().equals(instance.teacherId()) || ScheduleRules.sameEntity(item, instance)))) {
+                        && (item.teacherId().equals(instance.teacherId()) || sameStudentEntity(item, instance)))) {
                     continue;
                 }
 
@@ -114,7 +112,7 @@ final class ScheduleEngine {
                     if (placed.stream().anyMatch(item -> item.day() == day && item.slot().id().equals(slot.id()) && item.roomId().equals(room.id()))) {
                         continue;
                     }
-                    Candidate candidate = score(day, slot, room, instance, placed);
+                    Candidate candidate = score(day, slot, room, instance);
                     candidates.add(candidate);
                 }
             }
@@ -132,21 +130,9 @@ final class ScheduleEngine {
         return room.type() == RoomType.LECTURE_ROOM;
     }
 
-    private Candidate score(DayOfWeek day, TimeSlot slot, Room room, ClassInstance instance, List<ScheduleItem> placed) {
+    private Candidate score(DayOfWeek day, TimeSlot slot, Room room, ClassInstance instance) {
         int score = 100;
         List<String> warnings = new ArrayList<>();
-
-        Set<Block> existingBlocks = new HashSet<>();
-        for (ScheduleItem item : placed) {
-            if (item.teacherId().equals(instance.teacherId()) && item.day() == day) {
-                existingBlocks.add(item.slot().block());
-            }
-        }
-        if (!existingBlocks.isEmpty() && !existingBlocks.contains(slot.block())) {
-            score -= 35;
-            warnings.add("Soft warning: teacher " + repo.teacher(instance.teacherId()).name()
-                    + " has a mixed daily block on " + day + ".");
-        }
 
         if (instance.needsTv() && room.equipment() == Equipment.TV_BOARD) {
             score += 20;
@@ -156,9 +142,6 @@ final class ScheduleEngine {
                     + " needs TV, but " + room.name() + " is BoardOnly.");
         }
 
-        if (slot.block() == Block.MORNING) {
-            score += 5;
-        }
         return new Candidate(day, slot, room, score, warnings);
     }
 
@@ -201,11 +184,129 @@ final class ScheduleEngine {
         ClassInstance instance = new ClassInstance(Ids.next(), moving.offeringId(), moving.courseId(), moving.kind(),
                 moving.sectionId(), moving.labGroupId(), moving.teacherId(), audienceSize(moving), repo.course(moving.courseId()).needsTv());
         List<ScheduleItem> others = basis.stream().filter(item -> !item.id().equals(moving.id())).toList();
-        if (ScheduleRules.dailyLoad(others, instance, day) >= 3) {
+        if (dailyLoad(others, instance, day) >= 3) {
             return false;
         }
         return others.stream().noneMatch(item -> item.day() == day && item.slot().id().equals(slot.id())
-                && (item.roomId().equals(room.id()) || item.teacherId().equals(moving.teacherId()) || ScheduleRules.sameEntity(item, instance)));
+                && (item.roomId().equals(room.id()) || item.teacherId().equals(moving.teacherId()) || sameStudentEntity(item, instance)));
+    }
+
+    private int dailyLoad(List<ScheduleItem> items, ClassInstance instance, DayOfWeek day) {
+        if (instance.kind() == SessionKind.LAB) {
+            int load = 0;
+            for (ScheduleItem item : items) {
+                if (item.day() != day || item.kind() == SessionKind.EXAM) {
+                    continue;
+                }
+                boolean sameSectionTheory = item.kind() == SessionKind.THEORY
+                        && Objects.equals(sectionId(item), sectionId(instance));
+                boolean sameLabGroup = item.kind() == SessionKind.LAB
+                        && Objects.equals(item.labGroupId(), instance.labGroupId());
+                if (sameSectionTheory || sameLabGroup) {
+                    load++;
+                }
+            }
+            return load;
+        }
+
+        String sectionId = sectionId(instance);
+        List<LabGroup> groups = repo.labGroups.stream()
+                .filter(group -> group.sectionId().equals(sectionId))
+                .toList();
+        if (groups.isEmpty()) {
+            return sectionTheoryLoad(items, sectionId, day);
+        }
+
+        int maxLoad = 0;
+        for (LabGroup group : groups) {
+            int load = sectionTheoryLoad(items, sectionId, day);
+            for (ScheduleItem item : items) {
+                if (item.day() == day
+                        && item.kind() == SessionKind.LAB
+                        && Objects.equals(item.labGroupId(), group.id())) {
+                    load++;
+                }
+            }
+            if (load > maxLoad) {
+                maxLoad = load;
+            }
+        }
+        return maxLoad;
+    }
+
+    private int sectionTheoryLoad(List<ScheduleItem> items, String sectionId, DayOfWeek day) {
+        int load = 0;
+        for (ScheduleItem item : items) {
+            if (item.day() == day
+                    && item.kind() == SessionKind.THEORY
+                    && Objects.equals(sectionId(item), sectionId)) {
+                load++;
+            }
+        }
+        return load;
+    }
+
+    private boolean sameStudentEntity(ScheduleItem item, ClassInstance instance) {
+        if (item.kind() == SessionKind.EXAM) {
+            return false;
+        }
+        String itemSectionId = sectionId(item);
+        String instanceSectionId = sectionId(instance);
+        if (item.kind() == SessionKind.THEORY || instance.kind() == SessionKind.THEORY) {
+            return itemSectionId != null && itemSectionId.equals(instanceSectionId);
+        }
+        return Objects.equals(item.labGroupId(), instance.labGroupId());
+    }
+
+    private boolean sameStudentEntity(ScheduleItem left, ScheduleItem right) {
+        if (left.kind() == SessionKind.EXAM || right.kind() == SessionKind.EXAM) {
+            return false;
+        }
+        String leftSectionId = sectionId(left);
+        String rightSectionId = sectionId(right);
+        if (left.kind() == SessionKind.THEORY || right.kind() == SessionKind.THEORY) {
+            return leftSectionId != null && leftSectionId.equals(rightSectionId);
+        }
+        return Objects.equals(left.labGroupId(), right.labGroupId());
+    }
+
+    private String sectionId(ScheduleItem item) {
+        if (item.sectionId() != null) {
+            return item.sectionId();
+        }
+        if (item.labGroupId() != null) {
+            return repo.labGroup(item.labGroupId()).sectionId();
+        }
+        return null;
+    }
+
+    private String sectionId(ClassInstance instance) {
+        if (instance.sectionId() != null) {
+            return instance.sectionId();
+        }
+        if (instance.labGroupId() != null) {
+            return repo.labGroup(instance.labGroupId()).sectionId();
+        }
+        return null;
+    }
+
+    private List<String> studentClashes(List<ScheduleItem> items) {
+        List<String> clashes = new ArrayList<>();
+        for (int i = 0; i < items.size(); i++) {
+            for (int j = i + 1; j < items.size(); j++) {
+                ScheduleItem left = items.get(i);
+                ScheduleItem right = items.get(j);
+                if (left.day() == right.day()
+                        && left.slot().id().equals(right.slot().id())
+                        && sameStudentEntity(left, right)) {
+                    clashes.add("Conflict: " + repo.course(left.courseId()).name()
+                            + " and " + repo.course(right.courseId()).name()
+                            + " overlap for " + repo.audience(left)
+                            + " on " + left.day() + " " + left.slot().id() + ".");
+                }
+            }
+        }
+        return clashes;
     }
 
     int audienceSize(ScheduleItem item) {

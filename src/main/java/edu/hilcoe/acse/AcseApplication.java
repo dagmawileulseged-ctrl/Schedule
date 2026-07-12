@@ -556,7 +556,7 @@ public final class AcseApplication extends Application {
         panel.getStyleClass().add("setup-panel");
         Label title = new Label("Teacher Assignment");
         title.getStyleClass().add("panel-title");
-        Label intro = new Label("Select a batch, then choose a course offering for that batch. Assign teachers with per-day Morning, Afternoon, or Full day availability.");
+        Label intro = new Label("Select a batch, then choose a course offering for that batch. Assign teachers by available days only.");
         intro.getStyleClass().add("muted");
         intro.setWrapText(true);
 
@@ -626,7 +626,7 @@ public final class AcseApplication extends Application {
             }
             Map<DayOfWeek, Set<String>> lecturerSlots = readAvailability(lecturerAvailability);
             if (lecturerSlots.isEmpty()) {
-                status.setText("Select at least one working day for the lecturer and set Morning or Afternoon for each day.");
+                status.setText("Select at least one available day for the lecturer.");
                 return;
             }
 
@@ -640,7 +640,7 @@ public final class AcseApplication extends Application {
                 }
                 Map<DayOfWeek, Set<String>> labSlots = readAvailability(labAvailability);
                 if (labSlots.isEmpty()) {
-                    status.setText("Select at least one working day for the lab instructor with Morning or Afternoon per day.");
+                    status.setText("Select at least one available day for the lab instructor.");
                     return;
                 }
                 User labUser = User.of(UserRole.TEACHER, labName.getText().trim(), labEmail.getText().trim());
@@ -677,7 +677,7 @@ public final class AcseApplication extends Application {
 
     private VBox createDayAvailabilityEditor(String heading) {
         VBox box = new VBox(6);
-        Label header = new Label(heading + " — choose Morning, Afternoon, or Full day independently for each day:");
+        Label header = new Label(heading + " — choose the days this teacher is available:");
         header.getStyleClass().add("muted");
         header.setWrapText(true);
         box.getChildren().add(header);
@@ -687,7 +687,7 @@ public final class AcseApplication extends Application {
             controls.add(control);
             HBox row = new HBox(12);
             row.setAlignment(Pos.CENTER_LEFT);
-            row.getChildren().addAll(control.enabled, new Label("Shift:"), control.shift);
+            row.getChildren().add(control.enabled);
             box.getChildren().add(row);
         }
         box.setUserData(controls);
@@ -700,12 +700,7 @@ public final class AcseApplication extends Application {
         Map<DayOfWeek, Set<String>> availability = new EnumMap<>(DayOfWeek.class);
         for (DayAvailabilityControls control : controls) {
             if (control.enabled.isSelected()) {
-                Set<String> slots = switch (control.shift.getValue()) {
-                    case "Afternoon" -> Set.of("A1", "A2");
-                    case "Full day" -> Set.of("M1", "M2", "M3", "A1", "A2");
-                    default -> Set.of("M1", "M2", "M3");
-                };
-                availability.put(control.day, slots);
+                availability.put(control.day, Set.of("M1", "M2", "M3", "A1", "A2"));
             }
         }
         return availability;
@@ -714,16 +709,10 @@ public final class AcseApplication extends Application {
     private final class DayAvailabilityControls {
         final DayOfWeek day;
         final CheckBox enabled;
-        final ComboBox<String> shift;
 
         DayAvailabilityControls(DayOfWeek day) {
             this.day = day;
             enabled = new CheckBox(labelDay(day));
-            shift = new ComboBox<>();
-            shift.getItems().addAll("Morning", "Afternoon", "Full day");
-            shift.setValue("Morning");
-            shift.setDisable(true);
-            enabled.selectedProperty().addListener((obs, oldValue, selected) -> shift.setDisable(!selected));
         }
     }
 
@@ -762,17 +751,8 @@ public final class AcseApplication extends Application {
     private String formatTeacherAvailability(Teacher teacher) {
         return teacher.availability().entrySet().stream()
                 .sorted(Map.Entry.comparingByKey())
-                .map(entry -> labelDay(entry.getKey()).substring(0, 3) + " " + shiftLabel(entry.getValue()))
+                .map(entry -> labelDay(entry.getKey()).substring(0, 3))
                 .collect(Collectors.joining(", "));
-    }
-
-    private String shiftLabel(Set<String> slots) {
-        boolean morning = slots.contains("M1") || slots.contains("M2") || slots.contains("M3");
-        boolean afternoon = slots.contains("A1") || slots.contains("A2");
-        if (morning && afternoon) {
-            return "Full day";
-        }
-        return afternoon ? "Afternoon" : "Morning";
     }
 
     private javafx.util.StringConverter<CourseOffering> courseOfferingConverter() {

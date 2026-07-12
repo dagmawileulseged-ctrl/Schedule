@@ -3,7 +3,6 @@ package edu.hilcoe.acse;
 import java.time.DayOfWeek;
 import java.time.LocalDate;
 import java.time.LocalTime;
-import java.util.ArrayList;
 import java.util.EnumMap;
 import java.util.List;
 import java.util.Map;
@@ -169,23 +168,4 @@ final class ScheduleRules {
         return load;
     }
 
-    static List<String> teacherBlockWarnings(List<ScheduleItem> items) {
-        List<String> warnings = new ArrayList<>();
-        Map<String, Map<DayOfWeek, Set<Block>>> blocksByTeacher = new java.util.HashMap<>();
-        for (ScheduleItem item : items) {
-            if (item.kind() == SessionKind.EXAM) {
-                continue;
-            }
-            blocksByTeacher
-                    .computeIfAbsent(item.teacherId(), ignored -> new EnumMap<>(DayOfWeek.class))
-                    .computeIfAbsent(item.day(), ignored -> new java.util.HashSet<>())
-                    .add(item.slot().block());
-        }
-        blocksByTeacher.forEach((teacher, byDay) -> byDay.forEach((day, blocks) -> {
-            if (blocks.size() > 1) {
-                warnings.add("Teacher " + teacher + " has mixed morning/afternoon classes on " + day + ".");
-            }
-        }));
-        return warnings;
-    }
 }
